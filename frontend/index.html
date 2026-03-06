@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lucy — Virtual Try-On</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
+    <style>
+        :root {
+            --bg:      #0A0C10;
+            --card:    #13161D;
+            --card2:   #1C2030;
+            --border:  rgba(255,255,255,0.07);
+            --accent:  #7C6EFF;
+            --green:   #22D47A;
+            --red:     #FF4D6A;
+            --text:    #E8EAF0;
+            --muted:   #5A6175;
+            --bar:     56px;
+            --panel:   148px;
+        }
+        *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+        body{
+            font-family:'DM Sans',sans-serif;
+            background:var(--bg);color:var(--text);
+            overflow:hidden;touch-action:none;
+            -webkit-user-select:none;user-select:none;
+        }
+
+        /* ── hidden video source ── */
+        #video{position:fixed;opacity:0;pointer-events:none;width:1px;height:1px}
+
+        /* ── main canvas ── */
+        #canvas{
+            position:fixed;
+            top:var(--bar);left:0;
+            width:100vw;
+            height:calc(100vh - var(--bar) - var(--panel));
+            display:block;background:#000;
+        }
+
+        /* ── top bar ── */
+        .bar{
+            position:fixed;top:0;left:0;right:0;
+            height:var(--bar);
+            background:var(--card);
+            border-bottom:1px solid var(--border);
+            display:flex;align-items:center;justify-content:space-between;
+            padding:0 18px;z-index:200;
+        }
+        .logo{font-size:1.2rem;font-weight:700;letter-spacing:-.03em}
+        .logo em{
+            font-style:normal;display:inline-block;
+            width:7px;height:7px;border-radius:50%;
+            background:var(--accent);margin-left:4px;vertical-align:middle;
+            box-shadow:0 0 10px var(--accent);
+        }
+        .indicators{display:flex;align-items:center;gap:14px}
+        .ind{display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--muted);font-family:'DM Mono',monospace}
+        .dot{width:6px;height:6px;border-radius:50%;background:var(--red);transition:all .4s;flex-shrink:0}
+        .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+        .fps{
+            font-family:'DM Mono',monospace;font-size:.72rem;
+            background:var(--card2);border:1px solid var(--border);
+            padding:3px 9px;border-radius:20px;min-width:54px;text-align:center;
+        }
+
+        /* ── fabric panel ── */
+        .panel{
+            position:fixed;bottom:0;left:0;right:0;
+            height:var(--panel);
+            background:var(--card);border-top:1px solid var(--border);
+            padding:12px 16px 16px;z-index:200;
+        }
+        .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
+        .panel-head h3{font-size:.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+        .swatches{display:flex;gap:9px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+        .swatches::-webkit-scrollbar{display:none}
+        .swatch{flex-shrink:0;text-align:center;cursor:pointer}
+        .sw-color{
+            width:54px;height:54px;border-radius:13px;
+            border:2px solid transparent;transition:all .2s;margin-bottom:5px;
+        }
+        .swatch.active .sw-color{
+            border-color:var(--accent);
+            box-shadow:0 0 0 3px rgba(124,110,255,.25);
+            transform:translateY(-2px);
+        }
+        .sw-label{font-size:.63rem;color:var(--muted);display:block;white-space:nowrap}
+        .swatch.active .sw-label{color:var(--accent)}
+
+        /* ── capture btn ── */
+        #capture-btn{
+            position:fixed;
+            bottom:calc(var(--panel) + 16px);
+            left:50%;transform:translateX(-50%);
+            z-index:200;
+            width:64px;height:64px;border-radius:50%;
+            background:white;border:none;cursor:pointer;
+            transition:transform .15s;
+            box-shadow:0 4px 24px rgba(0,0,0,.7),0 0 0 3px rgba(255,255,255,.12);
+            display:flex;align-items:center;justify-content:center;
+        }
+        #capture-btn::after{
+            content:'';width:52px;height:52px;border-radius:50%;
+            border:2px solid rgba(0,0,0,.18);
+        }
+        #capture-btn:active{transform:translateX(-50%) scale(.9)}
+
+        /* ── loading ── */
+        #loading{
+            position:fixed;inset:0;background:var(--bg);
+            display:flex;flex-direction:column;align-items:center;justify-content:center;
+            z-index:9999;transition:opacity .5s;
+        }
+        .spin{
+            width:38px;height:38px;border:2px solid rgba(124,110,255,.15);
+            border-top-color:var(--accent);border-radius:50%;
+            animation:spin .9s linear infinite;margin-bottom:22px;
+        }
+        @keyframes spin{to{transform:rotate(360deg)}}
+        #loading h2{font-size:1.9rem;font-weight:700;letter-spacing:-.03em;margin-bottom:7px}
+        #load-status{font-size:.82rem;color:var(--muted)}
+
+        /* ── modal ── */
+        #modal{
+            display:none;position:fixed;inset:0;
+            background:rgba(0,0,0,.92);backdrop-filter:blur(10px);
+            z-index:1000;align-items:center;justify-content:center;padding:20px;
+        }
+        #modal.open{display:flex}
+        .modal-box{
+            background:var(--card);border:1px solid var(--border);
+            border-radius:20px;padding:18px;width:100%;max-width:480px;position:relative;
+        }
+        .modal-box img{width:100%;border-radius:12px;margin-bottom:14px;display:block}
+        .modal-btns{display:flex;gap:10px}
+        .mbtn{
+            flex:1;padding:12px;border-radius:11px;border:none;
+            font-family:'DM Sans',sans-serif;font-size:.85rem;font-weight:600;cursor:pointer;
+        }
+        .mbtn-p{background:var(--accent);color:#fff}
+        .mbtn-g{background:var(--card2);color:var(--text);border:1px solid var(--border)}
+        .modal-x{
+            position:absolute;top:13px;right:13px;
+            width:30px;height:30px;border-radius:50%;
+            background:var(--card2);border:1px solid var(--border);
+            color:var(--text);font-size:.9rem;cursor:pointer;
+            display:flex;align-items:center;justify-content:center;
+        }
+
+        /* ── toast ── */
+        #toast{
+            position:fixed;top:calc(var(--bar) + 12px);left:50%;
+            transform:translateX(-50%);
+            background:var(--card2);border:1px solid var(--border);
+            color:var(--text);font-size:.8rem;padding:7px 15px;
+            border-radius:20px;z-index:500;opacity:0;transition:opacity .3s;
+            pointer-events:none;white-space:nowrap;
+        }
+        #toast.show{opacity:1}
+
+        /* ── guide ── */
+        #guide{
+            position:fixed;
+            top:calc(var(--bar) + 16px);
+            left:50%;transform:translateX(-50%);
+            background:rgba(10,12,16,.88);backdrop-filter:blur(10px);
+            border:1px solid var(--border);border-radius:12px;
+            padding:11px 18px;font-size:.8rem;color:var(--muted);
+            z-index:150;pointer-events:none;white-space:nowrap;transition:opacity .5s;
+        }
+
+        /* ── debug ── */
+        #dbg{
+            display:none;position:fixed;
+            bottom:calc(var(--panel) + 80px);left:10px;
+            background:rgba(0,0,0,.78);color:#22D47A;
+            font-family:'DM Mono',monospace;font-size:10px;
+            padding:7px 9px;border-radius:8px;z-index:300;line-height:1.7;
+            pointer-events:none;white-space:pre;
+        }
+
+        @media(max-width:480px){
+            :root{--bar:50px;--panel:128px}
+            .ind span:not(.dot){display:none}
+        }
+    </style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+
+<div id="loading">
+    <div class="spin"></div>
+    <h2>Lucy</h2>
+    <p id="load-status">Starting camera…</p>
+</div>
+
+<div class="bar">
+    <div class="logo">Lucy<em></em></div>
+    <div class="indicators">
+        <div class="ind"><span class="dot" id="d-cam"></span><span>Camera</span></div>
+        <div class="ind"><span class="dot" id="d-pose"></span><span>Tracking</span></div>
+        <div class="fps" id="fps-el">-- FPS</div>
+    </div>
+</div>
+
+<div id="guide">Stand back so your shoulders are visible</div>
+
+<div class="panel">
+    <div class="panel-head"><h3>Fabric</h3></div>
+    <div class="swatches" id="swatches"></div>
+</div>
+
+<button id="capture-btn" title="Capture"></button>
+
+<div id="toast"></div>
+
+<div id="modal">
+    <div class="modal-box">
+        <button class="modal-x" id="modal-x">✕</button>
+        <img id="result-img" alt="Captured">
+        <div class="modal-btns">
+            <button class="mbtn mbtn-p" id="dl-btn">💾 Download</button>
+            <button class="mbtn mbtn-g" id="close-btn">✕ Close</button>
+        </div>
+    </div>
+</div>
+
+<div id="dbg"></div>
+
+<script>
+// =============================================================================
+//  LUCY — 2D Jacket Overlay Engine  v3.0
+//
+//  Core algorithm (mathematically correct):
+//
+//    1. MediaPipe gives left_shoulder (landmark 11) + right_shoulder (landmark 12)
+//       in normalised [0,1] coordinates every frame
+//
+//    2. From those 2 points we derive exactly 3 values:
+//         midpoint  → where to translate the canvas origin
+//         distance  → how to scale the jacket image
+//         angle     → how to rotate the jacket image
+//
+//    3. The jacket PNG has 2 manually measured anchor points
+//       (left shoulder seam, right shoulder seam) stored as fractions
+//
+//    4. We compute a canvas transform that maps those anchor points
+//       EXACTLY onto the live detected shoulder positions
+//
+//    5. Everything is smoothed with EMA to eliminate jitter
+// =============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CONFIG  ← the only thing you need to edit to calibrate
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CFG = {
+    // Path to your transparent jacket PNG (same folder as this HTML file)
+    jacketPng: 'jacket.png',
+
+    // ── ANCHOR POINTS ─────────────────────────────────────────────────────────
+    //  HOW TO MEASURE:
+    //  1. Open jacket.png in any image editor (Paint, Photoshop, GIMP, etc.)
+    //  2. Find the pixel coordinate of the LEFT shoulder seam
+    //     (where the sleeve meets the shoulder top, on the LEFT side of the image)
+    //  3. anchorLeft.x  = pixel_x / image_width
+    //     anchorLeft.y  = pixel_y / image_height
+    //  4. Repeat for the RIGHT shoulder seam → anchorRight
+    //
+    //  EXAMPLE: jacket.png is 1456×816 px, left seam is at x=422, y=185
+    //    anchorLeft  = { x: 422/1456, y: 185/816 }  =  { x: 0.290, y: 0.227 }
+    //
+    //  TIP: run with debug:true below — red dots show detected shoulders.
+    //  Tweak anchors until the jacket aligns perfectly.
+    //
+    anchorLeft:  { x: 0.29, y: 0.22 },   // ← MEASURE IN YOUR jacket.png
+    anchorRight: { x: 0.71, y: 0.22 },   // ← MEASURE IN YOUR jacket.png
+
+    // Shift jacket up/down. Positive = down, negative = up (fraction of height)
+    verticalOffset:  0.0,
+
+    // Scale multiplier: 1.0 = exact, 1.1 = 10% wider
+    scaleMultiplier: 1.08,
+
+    // EMA smoothing: 0.05 = very smooth/laggy, 0.35 = responsive/jittery
+    smoothing: 0.15,
+
+    // Hide jacket if shoulder visibility falls below this
+    minVisibility: 0.30,
+
+    // Show red debug dots + shoulder line + measurements overlay
+    debug: false,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FABRICS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FABRICS = [
+    { id: 'original', name: 'Original', tint: null,
+      bg: 'linear-gradient(135deg,#888 25%,#aaa 25%,#aaa 50%,#888 50%,#888 75%,#aaa 75%)',
+      bgSize: '12px 12px' },
+    { id: 'black',  name: 'Black',  tint: '#0d0d0d' },
+    { id: 'denim',  name: 'Denim',  tint: '#2B4C8C' },
+    { id: 'navy',   name: 'Navy',   tint: '#0F2044' },
+    { id: 'red',    name: 'Red',    tint: '#7A1020' },
+    { id: 'olive',  name: 'Olive',  tint: '#3B4A1A' },
+    { id: 'brown',  name: 'Suede',  tint: '#7D4C1E' },
+    { id: 'grey',   name: 'Grey',   tint: '#3A3F52' },
+    { id: 'white',  name: 'White',  tint: '#C8CDE0' },
+    { id: 'teal',   name: 'Teal',   tint: '#1A4A4A' },
+];
+
+// =============================================================================
+//  STATE
+// =============================================================================
+
+const video  = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+let jacketImg   = null;
+let tintCache   = {};
+let landmarks   = null;
+let activeFab   = FABRICS[0];
+let lastCapture = null;
+let poseReady   = false;
+
+// Smoothed transform values (updated every frame)
+const sm = { x: 0, y: 0, scale: 0, angle: 0, ready: false };
+
+// FPS tracking
+let frames = 0, fpsTs = performance.now();
+
+// =============================================================================
+//  CAMERA
+// =============================================================================
+
+async function startCamera() {
+    setStatus('Starting camera…');
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                width:      { ideal: 1280 },
+                height:     { ideal: 720 },
+                facingMode: 'user',
+                frameRate:  { ideal: 30 },
+            },
+            audio: false,
+        });
+        video.srcObject = stream;
+        await new Promise((res, rej) => {
+            video.onloadedmetadata = () => video.play().then(res).catch(rej);
+            setTimeout(() => rej(new Error('Camera timeout')), 8000);
+        });
+        dot('cam', true);
+        console.log('✅ Camera ready', video.videoWidth, 'x', video.videoHeight);
+    } catch(e) {
+        dot('cam', false);
+        console.error('Camera error:', e);
+        toast('Camera unavailable — check browser permissions');
+    }
+}
+
+// =============================================================================
+//  JACKET PNG + TINT CACHE
+// =============================================================================
+
+async function loadJacket() {
+    setStatus('Loading jacket…');
+    return new Promise(res => {
+        jacketImg = new Image();
+        jacketImg.onload  = () => { buildTints(); res(); };
+        jacketImg.onerror = () => {
+            console.warn('⚠️ jacket.png not found — place it in the same folder as index.html');
+            jacketImg = null;
+            res();
+        };
+        jacketImg.src = CFG.jacketPng;
+    });
+}
+
+function buildTints() {
+    if (!jacketImg) return;
+    tintCache = {};
+    FABRICS.forEach(f => {
+        if (!f.tint) { tintCache[f.id] = jacketImg; return; }
+        const tmp = document.createElement('canvas');
+        tmp.width = jacketImg.width;
+        tmp.height = jacketImg.height;
+        const tc = tmp.getContext('2d');
+        // Draw original jacket (preserves alpha)
+        tc.drawImage(jacketImg, 0, 0);
+        // Overlay color clipped to jacket shape
+        tc.globalCompositeOperation = 'source-atop';
+        tc.globalAlpha = 0.70;
+        tc.fillStyle = f.tint;
+        tc.fillRect(0, 0, tmp.width, tmp.height);
+        tc.globalAlpha = 1;
+        tc.globalCompositeOperation = 'source-over';
+        tintCache[f.id] = tmp;
+    });
+    console.log('✅ Tints built for', Object.keys(tintCache).length, 'fabrics');
+}
+
+// =============================================================================
+//  MEDIAPIPE POSE
+// =============================================================================
+
+async function startPose() {
+    setStatus('Loading body tracker…');
+    const pose = new Pose({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/${f}`,
+    });
+    pose.setOptions({
+        modelComplexity:          1,
+        smoothLandmarks:          true,
+        enableSegmentation:       false,
+        minDetectionConfidence:   0.5,
+        minTrackingConfidence:    0.5,
+    });
+    pose.onResults(r => {
+        landmarks = r.poseLandmarks || null;
+        dot('pose', !!landmarks);
+        if (landmarks && !poseReady) { poseReady = true; fadeGuide(); }
+    });
+    await pose.initialize();
+    console.log('✅ MediaPipe Pose ready');
+
+    // Feed frames at ~30fps; skip if previous frame still processing
+    let busy = false;
+    setInterval(async () => {
+        if (video.readyState >= 2 && !busy) {
+            busy = true;
+            try { await pose.send({ image: video }); } catch(_){}
+            finally { busy = false; }
+        }
+    }, 33);
+}
+
+// =============================================================================
+//  CANVAS SIZING
+// =============================================================================
+
+function sizeCanvas() {
+    const style  = getComputedStyle(document.documentElement);
+    const barH   = parseFloat(style.getPropertyValue('--bar'))   || 56;
+    const panelH = parseFloat(style.getPropertyValue('--panel')) || 148;
+    const w = window.innerWidth;
+    const h = window.innerHeight - barH - panelH;
+    canvas.width  = w;
+    canvas.height = h;
+    canvas.style.width  = w + 'px';
+    canvas.style.height = h + 'px';
+}
+window.addEventListener('resize', sizeCanvas);
+
+// =============================================================================
+//  THE MATH
+// =============================================================================
+
+function getShoulders() {
+    if (!landmarks) return null;
+    const ls = landmarks[11];   // MediaPipe left shoulder
+    const rs = landmarks[12];   // MediaPipe right shoulder
+    if (!ls || !rs) return null;
+    if ((ls.visibility || 0) < CFG.minVisibility) return null;
+    if ((rs.visibility || 0) < CFG.minVisibility) return null;
+
+    const W = canvas.width, H = canvas.height;
+    // Mirror X for front-facing (selfie) camera
+    return {
+        lx: (1 - ls.x) * W,  ly: ls.y * H,
+        rx: (1 - rs.x) * W,  ry: rs.y * H,
+    };
+}
+
+function computeTransform(lx, ly, rx, ry) {
+    if (!jacketImg) return null;
+
+    // Anchor points in jacket image pixels (with vertical offset applied)
+    const alx = CFG.anchorLeft.x  * jacketImg.width;
+    const aly  = (CFG.anchorLeft.y  + CFG.verticalOffset) * jacketImg.height;
+    const arx  = CFG.anchorRight.x * jacketImg.width;
+    const ary  = (CFG.anchorRight.y + CFG.verticalOffset) * jacketImg.height;
+
+    const anchorDist = Math.hypot(arx - alx, ary - aly);
+    if (anchorDist < 1) return null;
+
+    const detectedDist = Math.hypot(rx - lx, ry - ly);
+
+    return {
+        cx:       (lx + rx) / 2,                           // canvas midpoint X
+        cy:       (ly + ry) / 2,                           // canvas midpoint Y
+        scale:    (detectedDist / anchorDist) * CFG.scaleMultiplier,
+        angle:    Math.atan2(ry - ly, rx - lx),            // shoulder tilt
+        anchorCX: (alx + arx) / 2,                        // jacket image anchor mid X
+        anchorCY: (aly + ary) / 2,                        // jacket image anchor mid Y
+    };
+}
+
+// =============================================================================
+//  SMOOTHING (exponential moving average)
+// =============================================================================
+
+function applySmooth(t) {
+    const a = CFG.smoothing;
+    if (!sm.ready) {
+        sm.x = t.cx; sm.y = t.cy; sm.scale = t.scale; sm.angle = t.angle;
+        sm.ready = true;
+        return;
+    }
+    sm.x     += (t.cx    - sm.x)     * a;
+    sm.y     += (t.cy    - sm.y)     * a;
+    sm.scale += (t.scale - sm.scale) * a;
+    // Angle wrap-around correction
+    let da = t.angle - sm.angle;
+    if (da >  Math.PI) da -= 2 * Math.PI;
+    if (da < -Math.PI) da += 2 * Math.PI;
+    sm.angle += da * a;
+}
+
+// =============================================================================
+//  DRAW
+// =============================================================================
+
+function drawJacket(anchorCX, anchorCY) {
+    const img = tintCache[activeFab.id] || jacketImg;
+    if (!img) return;
+    ctx.save();
+    ctx.translate(sm.x, sm.y);
+    ctx.rotate(sm.angle);
+    ctx.scale(sm.scale, sm.scale);
+    ctx.drawImage(img, -anchorCX, -anchorCY);
+    ctx.restore();
+}
+
+function drawDebugOverlay(lx, ly, rx, ry) {
+    // Red dots on shoulders
+    ctx.fillStyle = '#FF3B3B';
+    ctx.beginPath(); ctx.arc(lx, ly, 7, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(rx, ry, 7, 0, Math.PI*2); ctx.fill();
+    // Dashed shoulder line
+    ctx.strokeStyle = '#FF3B3B'; ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(rx, ry); ctx.stroke();
+    ctx.setLineDash([]);
+    // Green midpoint
+    ctx.fillStyle = '#22D47A';
+    ctx.beginPath(); ctx.arc((lx+rx)/2, (ly+ry)/2, 5, 0, Math.PI*2); ctx.fill();
+    // Debug text panel
+    const d = document.getElementById('dbg');
+    d.style.display = 'block';
+    d.textContent = [
+        `dist:  ${Math.hypot(rx-lx, ry-ly).toFixed(1)}px`,
+        `scale: ${sm.scale.toFixed(5)}`,
+        `angle: ${(sm.angle * 180/Math.PI).toFixed(1)}°`,
+        `pos:   ${sm.x.toFixed(0)}, ${sm.y.toFixed(0)}`,
+    ].join('\n');
+}
+
+// =============================================================================
+//  RENDER LOOP
+// =============================================================================
+
+function loop() {
+    requestAnimationFrame(loop);
+
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // 1. Draw mirrored webcam feed as background
+    if (video.readyState >= 2) {
+        ctx.save();
+        ctx.translate(W, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, W, H);
+        ctx.restore();
+    }
+
+    // 2. Compute and draw jacket overlay
+    const sh = getShoulders();
+    if (sh) {
+        const { lx, ly, rx, ry } = sh;
+        const t = computeTransform(lx, ly, rx, ry);
+        if (t) {
+            applySmooth(t);
+            drawJacket(t.anchorCX, t.anchorCY);
+            if (CFG.debug) drawDebugOverlay(lx, ly, rx, ry);
+        }
+    } else if (sm.ready && jacketImg) {
+        // No pose detected — hold last known position so jacket doesn't vanish
+        const anchorCX = (CFG.anchorLeft.x + CFG.anchorRight.x) / 2 * jacketImg.width;
+        const anchorCY = (CFG.anchorLeft.y + CFG.anchorRight.y) / 2 * jacketImg.height;
+        drawJacket(anchorCX, anchorCY);
+    }
+
+    // 3. FPS counter
+    frames++;
+    const now = performance.now();
+    if (now - fpsTs >= 1000) {
+        document.getElementById('fps-el').textContent =
+            Math.round(frames * 1000 / (now - fpsTs)) + ' FPS';
+        frames = 0;
+        fpsTs  = now;
+    }
+}
+
+// =============================================================================
+//  FABRIC UI
+// =============================================================================
+
+function buildFabricUI() {
+    const container = document.getElementById('swatches');
+    FABRICS.forEach(f => {
+        const item  = document.createElement('div');
+        item.className = 'swatch' + (f.id === activeFab.id ? ' active' : '');
+
+        const color = document.createElement('div');
+        color.className = 'sw-color';
+        if (f.bg) {
+            color.style.background = f.bg;
+            if (f.bgSize) color.style.backgroundSize = f.bgSize;
+        } else {
+            color.style.background = f.tint || '#888';
+        }
+
+        const label = document.createElement('span');
+        label.className = 'sw-label';
+        label.textContent = f.name;
+
+        item.appendChild(color);
+        item.appendChild(label);
+        item.addEventListener('click', () => {
+            activeFab = f;
+            document.querySelectorAll('.swatch').forEach(el => el.classList.remove('active'));
+            item.classList.add('active');
+        });
+        container.appendChild(item);
+    });
+}
+
+// =============================================================================
+//  CAPTURE
+// =============================================================================
+
+document.getElementById('capture-btn').addEventListener('click', () => {
+    lastCapture = canvas.toDataURL('image/png');
+    document.getElementById('result-img').src = lastCapture;
+    document.getElementById('modal').classList.add('open');
+});
+
+['modal-x', 'close-btn'].forEach(id => {
+    document.getElementById(id).addEventListener('click', closeModal);
+});
+document.getElementById('modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('modal')) closeModal();
+});
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+document.getElementById('dl-btn').addEventListener('click', () => {
+    if (!lastCapture) return;
+    const a = document.createElement('a');
+    a.href = lastCapture;
+    a.download = `lucy-${Date.now()}.png`;
+    a.click();
+});
+
+// =============================================================================
+//  UTILS
+// =============================================================================
+
+function setStatus(t) { document.getElementById('load-status').textContent = t; }
+
+function dot(id, on) {
+    const el = document.getElementById('d-' + id);
+    if (el) el.className = 'dot' + (on ? ' on' : '');
+}
+
+function toast(msg, ms = 3500) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function fadeGuide() {
+    const g = document.getElementById('guide');
+    g.style.opacity = '0';
+    setTimeout(() => g.style.display = 'none', 600);
+}
+
+function hideLoading() {
+    const el = document.getElementById('loading');
+    el.style.opacity = '0';
+    setTimeout(() => el.style.display = 'none', 500);
+}
+
+// =============================================================================
+//  BOOT
+// =============================================================================
+
+async function boot() {
+    sizeCanvas();
+    buildFabricUI();
+
+    try {
+        await startCamera();
+        await loadJacket();
+        await startPose();
+
+        // Auto-hide guide after 7s even if pose not detected
+        setTimeout(fadeGuide, 7000);
+
+        hideLoading();
+        loop();
+
+        // Calibration guide in console
+        if (jacketImg) {
+            console.log('%c✅ Lucy 2D overlay running', 'color:#22D47A;font-weight:bold');
+            console.log('%c─── Calibration steps ───', 'color:#7C6EFF');
+            console.log('1. Set CFG.debug = true to see red shoulder dots');
+            console.log(`2. Your jacket.png is ${jacketImg.width}×${jacketImg.height}px`);
+            console.log('3. Open jacket.png in Paint/Photoshop');
+            console.log('4. Hover over LEFT shoulder seam → read pixel coords e.g. x=420 y=188');
+            console.log(`   anchorLeft.x = 420 / ${jacketImg.width} = ${(420/jacketImg.width).toFixed(3)}`);
+            console.log(`   anchorLeft.y = 188 / ${jacketImg.height} = ${(188/jacketImg.height).toFixed(3)}`);
+            console.log('5. Repeat for RIGHT shoulder seam → anchorRight');
+            console.log('6. Adjust CFG.verticalOffset if jacket sits too high/low');
+            console.log('7. Set CFG.debug = false when done');
+        } else {
+            console.warn('%c⚠️ jacket.png not loaded', 'color:#FF4D6A;font-weight:bold');
+            console.warn('Place jacket.png in the same folder as index.html');
+        }
+
+    } catch(e) {
+        console.error('Boot error:', e);
+        setStatus('Error: ' + e.message);
+    }
+}
+
+boot();
+</script>
+</body>
+</html>
