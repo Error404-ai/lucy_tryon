@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "URBAN - Virtual Try-On",
+  title: "LUCY - Virtual Try-On",
   description:
     "Add real-time virtual try-on to your product pages with Decart",
 };
