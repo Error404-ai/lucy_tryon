@@ -4,9 +4,9 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Product, PRODUCTS } from "@/lib/products";
 import { useCamera } from "@/hooks/useCamera";
 import {
-  useDecartRealtime,
+  useCustomRealtime,         // ← was: useDecartRealtime
   ConnectionStatus,
-} from "@/hooks/useDecartRealtime";
+} from "@/hooks/useCustomRealtime"; // ← was: @/hooks/useDecartRealtime
 import { urlToImageBlob, resizeImageBlob } from "@/lib/image-utils";
 
 interface TryOnModalProps {
@@ -27,7 +27,7 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
 export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps) {
   const { error: camError, startCamera, stopCamera } = useCamera();
   const { status, error: rtError, connect, disconnect, clientRef } =
-    useDecartRealtime();
+    useCustomRealtime(); // ← was: useDecartRealtime()
   const videoRef = useRef<HTMLVideoElement>(null);
   const [prompt, setPrompt] = useState(initialProduct.prompt);
   const [showPrompt, setShowPrompt] = useState(false);
@@ -55,12 +55,9 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
       const mediaStream = await startCamera();
       if (!mediaStream || cancelled) return;
 
-      const res = await fetch("/api/tokens", { method: "POST" });
-      const { apiKey } = await res.json();
-      if (cancelled) return;
-
+      // ↓ Removed: fetch("/api/tokens") — no Decart token needed anymore
       const rtClient = await connect({
-        apiKey,
+        apiKey: "",            // not used in custom implementation
         stream: mediaStream,
         onRemoteStream: handleRemoteStream,
       });
@@ -159,30 +156,22 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
           animation: "fadeOut 1s ease 3s both",
           pointerEvents: "none",
         }}>
-          {/* Human body silhouette SVG */}
           <svg
             width="160" height="320"
             viewBox="0 0 160 320"
             fill="none"
             style={{ animation: "breathe 2s ease-in-out infinite" }}
           >
-            {/* Head */}
             <ellipse cx="80" cy="36" rx="26" ry="30" stroke="rgba(201,169,110,0.6)" strokeWidth="1.5" strokeDasharray="4 3"/>
-            {/* Neck */}
             <line x1="80" y1="66" x2="80" y2="82" stroke="rgba(201,169,110,0.4)" strokeWidth="1.5"/>
-            {/* Shoulders */}
             <path d="M80 82 L30 100 L20 160 L40 165 L48 120 L80 110 L112 120 L120 165 L140 160 L130 100 Z"
               stroke="rgba(201,169,110,0.6)" strokeWidth="1.5" strokeDasharray="4 3" fill="none"/>
-            {/* Torso */}
             <path d="M48 120 L44 220 L116 220 L112 120 Z"
               stroke="rgba(201,169,110,0.5)" strokeWidth="1.5" strokeDasharray="4 3" fill="none"/>
-            {/* Left arm */}
             <path d="M30 100 L10 180 L20 184 L42 112"
               stroke="rgba(201,169,110,0.4)" strokeWidth="1.5" strokeDasharray="4 3" fill="none"/>
-            {/* Right arm */}
             <path d="M130 100 L150 180 L140 184 L118 112"
               stroke="rgba(201,169,110,0.4)" strokeWidth="1.5" strokeDasharray="4 3" fill="none"/>
-            {/* Legs */}
             <path d="M44 220 L36 310 L56 310 L80 240 L104 310 L124 310 L116 220 Z"
               stroke="rgba(201,169,110,0.4)" strokeWidth="1.5" strokeDasharray="4 3" fill="none"/>
           </svg>
@@ -229,7 +218,6 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
         display: "flex", alignItems: "flex-start", justifyContent: "space-between",
         background: "linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 100%)",
       }}>
-        {/* Status pill */}
         <div style={{
           display: "flex", alignItems: "center", gap: 7,
           background: "rgba(0,0,0,0.5)",
@@ -251,9 +239,7 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
           }}>{STATUS_LABELS[status]}</span>
         </div>
 
-        {/* Right controls */}
         <div style={{ display: "flex", gap: 8 }}>
-          {/* Prompt toggle */}
           <button
             onClick={() => setShowPrompt(!showPrompt)}
             title="Edit prompt"
@@ -275,7 +261,6 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
             </svg>
           </button>
 
-          {/* Close */}
           <button
             onClick={handleClose}
             style={{
@@ -298,7 +283,7 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
         </div>
       </div>
 
-      {/* ── Prompt input (slides down from top) ── */}
+      {/* ── Prompt input ── */}
       {showPrompt && (
         <div style={{
           position: "absolute", top: 68, left: 16, right: 16,
@@ -355,7 +340,6 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
         background: "linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 100%)",
         padding: "32px 0 0",
       }}>
-        {/* Active garment label */}
         <div style={{
           padding: "0 16px 12px",
           display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -382,7 +366,6 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
             </div>
           </div>
 
-          {/* Expand/collapse strip */}
           <button
             onClick={() => setStripExpanded(!stripExpanded)}
             style={{
@@ -407,7 +390,6 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
           </button>
         </div>
 
-        {/* Horizontal scrollable garment strip */}
         {stripExpanded && (
           <div style={{
             overflowX: "auto",
