@@ -78,9 +78,10 @@ export function useCustomRealtime() {
         // 4. Mirror connection-state changes into our status enum
         pc.onconnectionstatechange = () => {
           switch (pc.connectionState) {
-            case "connected":
-              setStatus("connected");
-              break;
+           case "connected":
+  // Only go to "connected" if we haven't started receiving video yet
+  setStatus(prev => prev === "generating" ? "generating" : "connected");
+  break;
             case "disconnected":
               setStatus("reconnecting");
               break;

@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     const gpuRes = await fetch(`${GPU_URL}/garment`, {
       method: "POST",
       body: formData,
-      signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(30_000),
     });
     if (!gpuRes.ok) {
       return NextResponse.json({ error: `Garment update failed: ${gpuRes.status}` }, { status: 502 });

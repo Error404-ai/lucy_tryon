@@ -51,28 +51,44 @@ export function TryOnModal({ product: initialProduct, onClose }: TryOnModalProps
   useEffect(() => {
     let cancelled = false;
 
-    async function init() {
-      const mediaStream = await startCamera();
-      if (!mediaStream || cancelled) return;
+  async function init() {
+  const mediaStream = await startCamera();
+  if (!mediaStream || cancelled) return;
 
-      // ↓ Removed: fetch("/api/tokens") — no Decart token needed anymore
-      const rtClient = await connect({
-        apiKey: "",            // not used in custom implementation
-        stream: mediaStream,
-        onRemoteStream: handleRemoteStream,
-      });
+  const rtClient = await connect({
+    apiKey: "",
+    stream: mediaStream,
+    onRemoteStream: handleRemoteStream,
+  });
 
-      if (!rtClient || cancelled) return;
+  if (!rtClient || cancelled) return;
 
-      const blob = await urlToImageBlob(initialProduct.image);
-      const resized = await resizeImageBlob(blob);
-      garmentBlobRef.current = resized;
-      rtClient.setImage(resized, {
-        prompt: initialProduct.prompt,
-        enhance: false,
-      });
-    }
+  // ✅ Wait until GPU server is actually streaming video back
+  // before sending the garment — otherwise the server isn't ready yet
+  await new Promise<void>((resolve) => {
+    const check = setInterval(() => {
+      if (clientRef.current) {
+        clearInterval(check);
+        resolve();
+      }
+    }, 200);
+    // Fallback: stop waiting after 5s even if not fully ready
+    setTimeout(() => {
+      clearInterval(check);
+      resolve();
+    }, 5000);
+  });
 
+  if (cancelled) return; // user may have closed modal while waiting
+
+  const blob = await urlToImageBlob(initialProduct.image);
+  const resized = await resizeImageBlob(blob);
+  garmentBlobRef.current = resized;
+  rtClient.setImage(resized, {
+    prompt: initialProduct.prompt,
+    enhance: false,
+  });
+}
     init();
 
     return () => {

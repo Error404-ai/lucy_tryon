@@ -13,8 +13,9 @@ export async function POST(req: NextRequest) {
       signal: AbortSignal.timeout(15_000),
     });
     if (!gpuRes.ok) {
-      const text = await gpuRes.text().catch(() => "(no body)");
-      return NextResponse.json({ error: `GPU server returned ${gpuRes.status}` }, { status: 502 });
+     const text = await gpuRes.text().catch(() => "(no body)");
+console.error("[/api/session] GPU error body:", text);
+return NextResponse.json({ error: `GPU server returned ${gpuRes.status}: ${text}` }, { status: 502 });
     }
     return NextResponse.json(await gpuRes.json());
   }  catch (err) {
