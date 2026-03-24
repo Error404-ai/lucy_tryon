@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * useCustomRealtime
- * Drop-in replacement for @decartai/sdk's useDecartRealtime.
- *
- * Architecture:
- *   Browser  ──[WebRTC video track]──►  GPU server  (camera frames in)
- *   Browser  ◄─[WebRTC video track]──  GPU server  (processed frames out)
- *   Browser  ──[HTTP POST /api/garment]──► GPU server  (garment image + prompt)
- *
- * The hook interface is intentionally identical to useDecartRealtime so
- * TryOnModal.tsx needs only a one-line import change.
- */
-
 import { useState, useCallback, useRef } from "react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -27,7 +14,7 @@ export type ConnectionStatus =
   | "error";
 
 interface ConnectOptions {
-  apiKey: string;        // kept for interface compatibility — not used here
+  apiKey: string;
   stream: MediaStream;
   prompt?: string;
   onRemoteStream: (stream: MediaStream) => void;
@@ -44,50 +31,66 @@ export function useCustomRealtime() {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  // clientRef mirrors the Decart SDK shape so TryOnModal.tsx compiles unchanged
   const clientRef = useRef<RealtimeClient | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+
+  // buffer ICE candidates until session_id is ready
+  const pendingCandidatesRef = useRef<RTCIceCandidate[]>([]);
 
   // ── connect ──────────────────────────────────────────────────────────────
   const connect = useCallback(
     async (options: ConnectOptions): Promise<RealtimeClient | null> => {
       const { stream, onRemoteStream } = options;
+
       setStatus("connecting");
       setError(null);
 
       try {
-        // 1. Create peer connection (STUN for NAT traversal on LAN still helps)
         const pc = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            {
+              urls: [
+                "turn:3.110.30.120:3478?transport=udp",
+                "turn:3.110.30.120:3478?transport=tcp",
+              ],
+              username:
+                process.env.NEXT_PUBLIC_TURN_USERNAME ?? "lucy",
+              credential:
+                process.env.NEXT_PUBLIC_TURN_CREDENTIAL ?? "tryon123",
+            },
+          ],
+          iceCandidatePoolSize: 10,
         });
+
         pcRef.current = pc;
 
-        // 2. Push outbound camera tracks to GPU server
+        // Add local tracks
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-        // 3. Receive inbound processed-video track from GPU server
+        // Handle remote stream
         const remoteStream = new MediaStream();
         pc.ontrack = (event) => {
           event.streams[0]?.getTracks().forEach((t) => remoteStream.addTrack(t));
           onRemoteStream(remoteStream);
-          // "generating" = we have video coming back → show live feed
           setStatus("generating");
         };
 
-        // 4. Mirror connection-state changes into our status enum
+        // Connection state
         pc.onconnectionstatechange = () => {
           switch (pc.connectionState) {
-           case "connected":
-  // Only go to "connected" if we haven't started receiving video yet
-  setStatus(prev => prev === "generating" ? "generating" : "connected");
-  break;
+            case "connected":
+              setStatus((prev) =>
+                prev === "generating" ? "generating" : "connected"
+              );
+              break;
             case "disconnected":
               setStatus("reconnecting");
               break;
             case "failed":
               setStatus("error");
-              setError("WebRTC connection failed — check GPU server is running");
+              setError("WebRTC connection failed");
               break;
             case "closed":
               setStatus("disconnected");
@@ -97,17 +100,38 @@ export function useCustomRealtime() {
 
         pc.oniceconnectionstatechange = () => {
           if (pc.iceConnectionState === "failed") {
-            setError("ICE negotiation failed — are you on the same network?");
             setStatus("error");
+            setError("ICE negotiation failed");
           }
         };
 
-        // 5. Create SDP offer, wait for ICE candidates to be gathered
+        // Handle ICE candidates (Trickle ICE)
+        pc.onicecandidate = (event) => {
+          if (!event.candidate) return;
+
+          if (!sessionIdRef.current) {
+            pendingCandidatesRef.current.push(event.candidate);
+          } else {
+            sendCandidate(event.candidate);
+          }
+        };
+
+        const sendCandidate = (candidate: RTCIceCandidate) => {
+          fetch("/api/session/candidate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: sessionIdRef.current,
+              candidate,
+            }),
+          }).catch(console.error);
+        };
+
+        // ✅ Create & set offer
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        await waitForIceGathering(pc);
 
-        // 6. Send offer to Next.js signaling proxy → GPU server /offer
+        // ✅ Send offer immediately (no ICE wait)
         const res = await fetch("/api/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -115,23 +139,33 @@ export function useCustomRealtime() {
         });
 
         if (!res.ok) {
-          throw new Error(
-            `Signaling failed (${res.status}): is the GPU server running at GPU_SERVER_URL?`
-          );
+          throw new Error(`Signaling failed (${res.status})`);
         }
 
-        // 7. GPU server returns SDP answer + a session ID for subsequent garment updates
         const { sdp: answerSdp, session_id } = await res.json();
         sessionIdRef.current = session_id;
-        await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
 
-        // 8. Build the client object — same shape as Decart's RealtimeClient
+        // flush buffered candidates
+        pendingCandidatesRef.current.forEach((c) => sendCandidate(c));
+        pendingCandidatesRef.current = [];
+
+        // ✅ Set remote SDP
+        try {
+          await pc.setRemoteDescription(
+            new RTCSessionDescription(answerSdp)
+          );
+        } catch (err) {
+          console.error("Failed to set remote description", err);
+          throw err;
+        }
+
+        // Optional: fetch remote ICE candidates (if your backend supports it)
+        pollRemoteCandidates(pc);
+
+        // Client object
         const client: RealtimeClient = {
           setImage: (blob, opts) => {
-            if (!sessionIdRef.current) {
-              console.warn("[RealTime] No session ID yet — skipping setImage");
-              return;
-            }
+            if (!sessionIdRef.current) return;
             sendGarment(sessionIdRef.current, blob, opts.prompt);
           },
           disconnect: () => {
@@ -145,7 +179,7 @@ export function useCustomRealtime() {
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Unknown connection error";
-        console.error("[useCustomRealtime] connect error:", err);
+        console.error(err);
         setError(msg);
         setStatus("error");
         return null;
@@ -156,10 +190,8 @@ export function useCustomRealtime() {
 
   // ── disconnect ────────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    pcRef.current?.close();
+    pcRef.current = null;
     clientRef.current = null;
     sessionIdRef.current = null;
     setStatus("disconnected");
@@ -168,42 +200,30 @@ export function useCustomRealtime() {
   return { status, error, connect, disconnect, clientRef };
 }
 
-// ── Internal helpers ───────────────────────────────────────────────────────
+// ── Remote ICE polling (basic implementation) ──────────────────────────────
 
-/**
- * Wait until ICE gathering is complete before sending the SDP offer.
- * This bundles all ICE candidates into the offer (Vanilla ICE / trickle-off),
- * which is simpler than implementing trickle-ICE and works fine on LAN.
- *
- * Hard-caps at 3 s so a network issue doesn't stall the UI forever.
- */
-function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (pc.iceGatheringState === "complete") {
-      resolve();
-      return;
+function pollRemoteCandidates(pc: RTCPeerConnection) {
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch("/api/session/candidates");
+      if (!res.ok) return;
+
+      const candidates = await res.json();
+
+      candidates.forEach((c: RTCIceCandidateInit) => {
+        pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+      });
+    } catch (err) {
+      console.error("Polling ICE failed", err);
     }
+  }, 1000);
 
-    const onchange = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", onchange);
-        resolve();
-      }
-    };
-
-    pc.addEventListener("icegatheringstatechange", onchange);
-    // Fallback: don't wait more than 3 s even if gathering isn't "complete"
-    setTimeout(resolve, 3_000);
-  });
+  // stop after 15 sec
+  setTimeout(() => clearInterval(interval), 15000);
 }
 
-/**
- * Send a garment image + prompt to the GPU server via HTTP.
- * Using HTTP (not a DataChannel) keeps the implementation simple and lets
- * the GPU server handle the image synchronously before the next frame.
- *
- * Route: Browser → /api/garment (Next.js) → GPU_SERVER_URL/garment (Python)
- */
+// ── Garment sender ─────────────────────────────────────────────────────────
+
 async function sendGarment(
   sessionId: string,
   blob: Blob,
@@ -221,11 +241,9 @@ async function sendGarment(
     });
 
     if (!res.ok) {
-      console.error(
-        `[sendGarment] GPU server rejected garment update: ${res.status} ${res.statusText}`
-      );
+      console.error("Garment upload failed:", res.status);
     }
   } catch (err) {
-    console.error("[sendGarment] Network error:", err);
+    console.error("Garment error:", err);
   }
 }
